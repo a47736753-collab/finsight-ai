@@ -49,7 +49,9 @@ interface TxSpec {
 }
 
 let seq = 0;
-function tx(spec: TxSpec, rng: () => number): Transaction[] {
+function tx(spec: TxSpec, rng?: () => number): Transaction[] {
+  // Deterministic fallback so fixed-amount specs can be declared without a PRNG.
+  const r = rng ?? (() => 0.5);
   const months = spec.months ?? [0, 1, 2, 3, 4, 5];
   const out: Transaction[] = [];
   for (let mi = 0; mi < months.length; mi++) {
@@ -59,8 +61,8 @@ function tx(spec: TxSpec, rng: () => number): Transaction[] {
     const amount =
       typeof baseAmount === "number"
         ? baseAmount
-        : Math.round(baseAmount * (0.9 + rng() * 0.2));
-    const pending = spec.payment === "Card" && rng() < 0.06;
+        : Math.round(baseAmount * (0.9 + r() * 0.2));
+    const pending = spec.payment === "Card" && r() < 0.06;
     out.push({
       id: `demo-${seq++}`,
       date: iso,
@@ -71,7 +73,7 @@ function tx(spec: TxSpec, rng: () => number): Transaction[] {
       category: spec.category,
       payment: spec.payment,
       status: pending ? "pending" : spec.status ?? "settled",
-      confidence: spec.confidence ?? Math.round(72 + rng() * 27),
+      confidence: spec.confidence ?? Math.round(72 + r() * 27),
       recurring: spec.recurring,
       normalized: false,
     });
