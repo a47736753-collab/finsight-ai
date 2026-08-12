@@ -6,9 +6,7 @@
  *   glass, frost, ripple, plasma, timeshift
  * every effect ships with intensity presets that are applied live.
  *
- * GSAP + Three.js are loaded from CDN at runtime (so the file stays
- * copy-paste friendly), falling back to the project's bundled npm packages
- * if the CDN is unreachable.
+ * GSAP + Three.js are imported from the project's npm packages.
  *
  * Usage (shadcn /components/ui):
  *   import { Component as InteractiveList } from "@/components/ui/lumina-interactive-list";
@@ -18,9 +16,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-declare const gsap: any;
-declare const THREE: any;
+import gsap from "gsap";
+import * as THREE from "three";
 
 /* ============================================================================
  * Configuration
@@ -544,7 +541,10 @@ void main() {
  * Procedural slide artwork (deterministic, offline-safe)
  * ========================================================================== */
 
-function createSlideTexture(slide: LuminaSlide, seed: number): any {
+function createSlideTexture(
+  slide: LuminaSlide,
+  seed: number,
+): THREE.CanvasTexture | null {
   const canvas = document.createElement("canvas");
   canvas.width = 1280;
   canvas.height = 720;
@@ -637,7 +637,7 @@ function createEngine(
   container: HTMLElement,
   slides: LuminaSlide[],
   opts: EngineOptions,
-): any {
+) {
   const settings = SLIDER_CONFIG.settings;
   const count = slides.length;
 
@@ -723,7 +723,15 @@ function createEngine(
   const mesh = new THREE.Mesh(geometry, material);
   scene.add(mesh);
 
-  const textures = slides.map((slide, i) => createSlideTexture(slide, i + 7));
+  const textures = slides
+    .map((slide, i) => createSlideTexture(slide, i + 7))
+    .filter(Boolean) as THREE.CanvasTexture[];
+
+  if (textures.length === 0) {
+    console.error("[Lumina] No textures created");
+    return engine;
+  }
+
   uniforms.uTexture.value = textures[0];
   uniforms.uNextTexture.value = textures[1] || textures[0];
   uniforms.uResolution.value.set(
@@ -749,7 +757,7 @@ function createEngine(
 
   /* ---------- autoplay + progress ---------- */
   let autoplayProxy = { p: 0 };
-  let autoplayTween: any = null;
+  let autoplayTween: gsap.core.Tween | null = null;
   const progressEl = opts.progressEl;
 
   const stopAutoplay = () => {
@@ -770,7 +778,8 @@ function createEngine(
       duration: settings.autoSlideSpeed / 1000,
       ease: "none",
       onUpdate: () => {
-        if (progressEl) progressEl.style.transform = `scaleX(${autoplayProxy.p})`;
+        if (progressEl)
+          progressEl.style.transform = `scaleX(${autoplayProxy.p})`;
       },
       onComplete: () => {
         autoplayTween = null;
@@ -827,7 +836,8 @@ function createEngine(
   const animate = () => {
     if (engine.disposed) return;
     engine.raf = requestAnimationFrame(animate);
-    uniforms.uTime.value = (performance.now() / 1000) * settings.speedMultiplier;
+    uniforms.uTime.value =
+      (performance.now() / 1000) * settings.speedMultiplier;
     engine.mouse.x += (engine.mouseTarget.x - engine.mouse.x) * 0.045;
     engine.mouse.y += (engine.mouseTarget.y - engine.mouse.y) * 0.045;
     uniforms.uMouse.value.set(engine.mouse.x, engine.mouse.y);
@@ -849,7 +859,7 @@ function createEngine(
     window.removeEventListener("resize", onResize);
     geometry.dispose();
     material.dispose();
-    textures.forEach((t: any) => {
+    textures.forEach((t) => {
       if (t && t.dispose) t.dispose();
     });
     renderer.dispose();
@@ -908,74 +918,17 @@ export function Component({
     const container = containerRef.current;
     if (!container) return;
 
-    // --- DYNAMIC SCRIPT LOADING (CDN first, bundled npm fallback) ---
-    const loadScripts = async () => {
-      const loadScript = (src: string, globalName: string) =>
-        new Promise<void>((res, rej) => {
-          if ((window as any)[globalName]) {
-            res();
-            return;
-          }
-          if (document.querySelector(`script[src="${src}"]`)) {
-            const check = setInterval(() => {
-              if ((window as any)[globalName]) {
-                clearInterval(check);
-                res();
-              }
-            }, 50);
-            setTimeout(() => {
-              clearInterval(check);
-              rej(new Error(`Timeout waiting for ${globalName}`));
-            }, 10000);
-            return;
-          }
-          const s = document.createElement("script");
-          s.src = src;
-          s.onload = () => {
-            setTimeout(() => res(), 100);
-          };
-          s.onerror = () => rej(new Error(`Failed to load ${src}`));
-          document.head.appendChild(s);
-        });
-
-      try {
-        await loadScript(
-          "https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js",
-          "gsap",
-        );
-        await loadScript(
-          "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js",
-          "THREE",
-        );
-      } catch (err) {
-        console.warn(
-          "[Lumina] CDN script load failed, falling back to bundled npm packages:",
-          err,
-        );
-        const gsapMod = await import("gsap");
-        (window as any).gsap = gsapMod.default ?? gsapMod;
-        const threeMod = await import("three");
-        (window as any).THREE = threeMod;
-      }
-    };
-
-    const initApplication = () => {
+    // gsap and three are imported from npm — no CDN loading needed
+    try {
       engineRef.current = createEngine(container, slides, {
         autoplay,
         progressEl: progressRef.current,
         onChange: (i: number) => setActiveIndex(i),
       });
-      setReady(true);
-    };
-
-    loadScripts()
-      .then(() => {
-        if (!disposed) initApplication();
-      })
-      .catch((err) => {
-        console.error("[Lumina] Failed to initialize:", err);
-        if (!disposed) setReady(true);
-      });
+    } catch (err) {
+      console.error("[Lumina] Failed to initialize engine:", err);
+    }
+    if (!disposed) setReady(true);
 
     return () => {
       disposed = true;
@@ -1018,7 +971,9 @@ export function Component({
   };
 
   const activeSlide = slides[activeIndex] ?? slides[0];
-  const presets = Object.keys(SLIDER_CONFIG.effectPresets[effect] ?? {});
+  const presets = Object.keys(
+    SLIDER_CONFIG.effectPresets[effect] ?? {},
+  );
   const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
   return (
