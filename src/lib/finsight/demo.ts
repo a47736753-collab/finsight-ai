@@ -1,6 +1,6 @@
 // ─── Demo data generator ─────────────────────────────────────────────────────
 // Deterministic (seeded) generator that produces a realistic 6-month Indian
-// transaction history for an ₹45k/month earner, deliberately planted with the
+// transaction history for a ₹52k/month earner, deliberately planted with the
 // problems the product is built to surface:
 //   duplicate payment, subscription price increase, unused subscription,
 //   spending spike, micro-spending, weekend-heavy + late-night spending,
@@ -39,6 +39,9 @@ interface TxSpec {
   category: CategoryId;
   payment: PaymentType;
   day: number;
+  /** per-month day-of-month override (indexed by `months`) — lets fixed bills
+   *  drift naturally so they don't systematically skew weekday/weekend stats */
+  days?: number[];
   hour?: number;
   minute?: number;
   months?: number[]; // which months back (default all)
@@ -56,7 +59,8 @@ function tx(spec: TxSpec, rng?: () => number): Transaction[] {
   const out: Transaction[] = [];
   for (let mi = 0; mi < months.length; mi++) {
     const m = months[mi];
-    const { iso, weekday, hours } = monthOffsetDate(m, spec.day, spec.hour ?? 11, spec.minute ?? 0);
+    const day = spec.days?.[mi] ?? spec.day;
+    const { iso } = monthOffsetDate(m, day, spec.hour ?? 11, spec.minute ?? 0);
     const baseAmount = Array.isArray(spec.amount) ? spec.amount[mi] : spec.amount;
     const amount =
       typeof baseAmount === "number"
@@ -76,11 +80,31 @@ function tx(spec: TxSpec, rng?: () => number): Transaction[] {
       confidence: spec.confidence ?? Math.round(72 + r() * 27),
       recurring: spec.recurring,
       normalized: false,
+      hour: spec.hour,
     });
-    void weekday;
-    void hours;
   }
   return out;
+}
+
+/** Weekend bias: transactions landing on Sat/Sun get a ~50-75% spend boost,
+ *  which powers the weekend-spending insight and root-cause analysis. */
+function weekendBoost(rng: () => number, iso: string, amount: number) {
+  const wd = new Date(`${iso}T12:00:00`).getDay();
+  if (wd === 0 || wd === 6) return Math.round(amount * (1.5 + rng() * 0.25));
+  return amount;
+}
+
+/** Mild weekend preference for discretionary spending: ~34% of picks land on
+ *  Sat/Sun (vs the natural ~29%), which combines with the boost to push the
+ *  weekend/weekday ratio clearly above 1. */
+function discretionaryDay(rng: () => number, monthsBack: number) {
+  for (let i = 0; i < 12; i++) {
+    const day = 1 + Math.floor(rng() * 28);
+    const wd = monthOffsetDate(monthsBack, day, 12).weekday;
+    const isWeekend = wd === 0 || wd === 6;
+    if (isWeekend || rng() >= 0.07) return day;
+  }
+  return 1 + Math.floor(rng() * 28);
 }
 
 // Repeated small transactions (micro-spending) — deterministic spread.
@@ -98,10 +122,10 @@ function microTx(
   for (let i = 0; i < count; i++) {
     const m = i % 6; // months back
     const merchant = merchants[i % merchants.length];
-    const day = 1 + Math.floor(rng() * 28);
+    const day = discretionaryDay(rng, m);
     const hour = rng() < 0.42 ? 21 + Math.floor(rng() * 3) : 8 + Math.floor(rng() * 12);
     const { iso } = monthOffsetDate(m, day, hour, Math.floor(rng() * 60));
-    const amount = Math.round((min + rng() * (max - min)) / 5) * 5;
+    const amount = weekendBoost(rng, iso, Math.round((min + rng() * (max - min)) / 5) * 5);
     out.push({
       id: `demo-${seq++}`,
       date: iso,
@@ -114,6 +138,7 @@ function microTx(
       status: "settled",
       confidence: Math.round(70 + rng() * 25),
       normalized: payment === "UPI",
+      hour,
     });
   }
   return out;
@@ -125,17 +150,19 @@ export function generateDemoTransactions(): Transaction[] {
   const all: Transaction[] = [];
 
   // ── Income ──
-  all.push(...tx({ desc: "SALARY/ACME SOLUTIONS PVT LTD/NEFT", merchant: "ACME Solutions", amount: 45000, category: "income", payment: "NEFT", day: 1, hour: 9, confidence: 99, kind: "income" }));
+  all.push(...tx({ desc: "SALARY/ACME SOLUTIONS PVT LTD/NEFT", merchant: "ACME Solutions", amount: 52000, category: "income", payment: "NEFT", day: 1, hour: 9, confidence: 99, kind: "income" }));
   all.push(...tx({ desc: "INTEREST/SAVINGS ACCOUNT", merchant: "Bank Interest", amount: 620, category: "income", payment: "NEFT", day: 28, hour: 9, confidence: 99, kind: "income" }));
 
   // ── Rent / bills ──
-  all.push(...tx({ desc: "RENT/FLAT 3B KORAMANGALA", merchant: "Landlord — Rent", amount: 11000, category: "bills", payment: "UPI", day: 3, hour: 10, confidence: 97, recurring: true }));
+  // Rent drifts across the 1st-7th (as real rent payments do) so the fixed bill
+  // doesn't systematically land on weekdays and drown the weekend story.
+  all.push(...tx({ desc: "RENT/FLAT 3B KORAMANGALA", merchant: "Landlord — Rent", amount: 11000, category: "bills", payment: "UPI", day: 3, days: [2, 6, 4, 7, 3, 5], hour: 10, confidence: 97, recurring: true }));
   all.push(...tx({ desc: "BESCOM/ELECTRICITY BILL", merchant: "BESCOM", amount: [1240, 1310, 1180, 1490, 1520, 1640], category: "utilities", payment: "UPI", day: 8, hour: 12, confidence: 94, recurring: true, months: [0, 1, 2, 3, 4, 5] }));
   all.push(...tx({ desc: "AIRTEL FIBER/BILL PAY", merchant: "Airtel Broadband", amount: 799, category: "utilities", payment: "UPI", day: 12, hour: 11, confidence: 96, recurring: true }));
   all.push(...tx({ desc: "JIO PREPAID RECHARGE", merchant: "Jio Recharge", amount: 299, category: "utilities", payment: "Wallet", day: 15, hour: 10, confidence: 95, recurring: true }));
 
   // ── Subscriptions ──
-  // Netflix: price increase from ₹649 → ₹749 in month 1 (0 = most recent)
+  // Netflix: price increase from ₹649 → ₹749 in the most recent months
   all.push(...tx({ desc: "NETFLIX.COM/MEMBERSHIP", merchant: "Netflix", amount: 749, category: "subscriptions", payment: "Card", day: 5, hour: 6, confidence: 99, recurring: true, months: [0, 1] }));
   all.push(...tx({ desc: "NETFLIX.COM/MEMBERSHIP", merchant: "Netflix", amount: 649, category: "subscriptions", payment: "Card", day: 5, hour: 6, confidence: 99, recurring: true, months: [2, 3, 4, 5] }));
   all.push(...tx({ desc: "SPOTIFY PREMIUM", merchant: "Spotify", amount: 119, category: "subscriptions", payment: "Card", day: 9, hour: 5, confidence: 99, recurring: true }));
@@ -146,18 +173,18 @@ export function generateDemoTransactions(): Transaction[] {
   all.push(...tx({ desc: "COURSERA PLUS SUBSCRIPTION", merchant: "Coursera Plus", amount: 799, category: "subscriptions", payment: "Card", day: 7, hour: 6, confidence: 99, recurring: true, months: [0, 1, 2, 3] }));
   all.push(...tx({ desc: "CULT.FIT MEMBERSHIP", merchant: "Cult.fit", amount: 999, category: "subscriptions", payment: "UPI", day: 14, hour: 9, confidence: 98, recurring: true }));
 
-  // ── Food delivery — late-night surge in the 2 most recent months ──
+  // ── Food delivery — clear late-night surge in the most recent month ──
   const foodMerchants = ["Swiggy", "Zomato", "Dominos", "KFC", "McDonald's"];
-  const surge = (m: number) => m < 2;
-  for (let i = 0; i < 30; i++) {
+  const surge = (m: number) => m === 0;
+  for (let i = 0; i < 42; i++) {
     const m = i % 6;
     const merchant = foodMerchants[i % foodMerchants.length];
-    const day = 1 + Math.floor(rng() * 28);
-    const lateNight = surge(m) ? rng() < 0.5 : rng() < 0.25;
+    const day = discretionaryDay(rng, m);
+    const lateNight = surge(m) ? rng() < 0.7 : rng() < 0.16;
     const hour = lateNight ? 22 + Math.floor(rng() * 2) : 12 + Math.floor(rng() * 9);
     const { iso } = monthOffsetDate(m, day, hour, Math.floor(rng() * 60));
-    const base = surge(m) ? (rng() < 0.4 ? 420 : 280) : 260;
-    const amount = Math.round((base + rng() * 220) / 5) * 5;
+    const base = surge(m) ? 320 + rng() * 220 : 240 + rng() * 140;
+    const amount = weekendBoost(rng, iso, Math.round((base + rng() * 120) / 5) * 5);
     all.push({
       id: `demo-${seq++}`,
       date: iso,
@@ -170,6 +197,7 @@ export function generateDemoTransactions(): Transaction[] {
       status: "settled",
       confidence: Math.round(74 + rng() * 24),
       normalized: true,
+      hour,
     });
   }
 
@@ -178,10 +206,10 @@ export function generateDemoTransactions(): Transaction[] {
   for (let i = 0; i < 24; i++) {
     const m = i % 6;
     const merchant = groceryMerchants[i % groceryMerchants.length];
-    const day = 1 + Math.floor(rng() * 28);
+    const day = discretionaryDay(rng, m);
     const hour = 9 + Math.floor(rng() * 9);
     const { iso } = monthOffsetDate(m, day, hour, Math.floor(rng() * 60));
-    const amount = Math.round((180 + rng() * 420) / 10) * 10;
+    const amount = weekendBoost(rng, iso, Math.round((180 + rng() * 420) / 10) * 10);
     all.push({
       id: `demo-${seq++}`,
       date: iso,
@@ -196,16 +224,16 @@ export function generateDemoTransactions(): Transaction[] {
     });
   }
 
-  // ── Shopping ──
+  // ── Shopping (festive spike in the most recent month) ──
   const shopMerchants = ["Amazon", "Flipkart", "Myntra", "Ajio"];
   for (let i = 0; i < 14; i++) {
     const m = i % 6;
     const merchant = shopMerchants[i % shopMerchants.length];
-    const day = 1 + Math.floor(rng() * 28);
+    const day = discretionaryDay(rng, m);
     const hour = 13 + Math.floor(rng() * 8);
     const { iso } = monthOffsetDate(m, day, hour, Math.floor(rng() * 60));
-    const spike = m === 0 ? rng() < 0.55 : false; // festive spike month
-    const amount = spike ? Math.round((1500 + rng() * 1800) / 10) * 10 : Math.round((400 + rng() * 900) / 10) * 10;
+    const spike = m === 0 ? rng() < 0.4 : false; // festive spike month
+    const amount = weekendBoost(rng, iso, spike ? Math.round((900 + rng() * 1000) / 10) * 10 : Math.round((400 + rng() * 900) / 10) * 10);
     all.push({
       id: `demo-${seq++}`,
       date: iso,
@@ -221,43 +249,45 @@ export function generateDemoTransactions(): Transaction[] {
   }
 
   // ── Deliberate problems ──
-  // 1. Unusual transaction: ₹8,900 Amazon purchase (7.4× normal)
+  // 1. Unusual transaction: ₹6,900 Amazon purchase (≈5.8× the typical Amazon order)
   const { iso: anomalyIso } = monthOffsetDate(0, 22, 21, 40);
   all.push({
     id: `demo-${seq++}`,
     date: anomalyIso,
     description: "AMAZON/ORDER/89001234567/DELL LAPTOP",
     merchant: "Amazon",
-    amount: 8900,
+    amount: 6900,
     kind: "expense",
     category: "shopping",
     payment: "Card",
     status: "settled",
     confidence: 82,
+    hour: 21,
   });
   // 2. Duplicate payment: ₹1,299 twice, 4 minutes apart
   const { iso: dupIso } = monthOffsetDate(0, 17, 18, 22);
   const { iso: dupIso2 } = monthOffsetDate(0, 17, 18, 26);
-  all.push({ id: `demo-${seq++}`, date: dupIso, description: "AMAZON/ORDER/7788991122/AMAZON PAY", merchant: "Amazon", amount: 1299, kind: "expense", category: "shopping", payment: "UPI", status: "settled", confidence: 96 });
-  all.push({ id: `demo-${seq++}`, date: dupIso2, description: "AMAZON/ORDER/7788991123/AMAZON PAY", merchant: "Amazon", amount: 1299, kind: "expense", category: "shopping", payment: "UPI", status: "settled", confidence: 96 });
+  all.push({ id: `demo-${seq++}`, date: dupIso, description: "AMAZON/ORDER/7788991122/AMAZON PAY", merchant: "Amazon", amount: 1299, kind: "expense", category: "shopping", payment: "UPI", status: "settled", confidence: 96, hour: 18 });
+  all.push({ id: `demo-${seq++}`, date: dupIso2, description: "AMAZON/ORDER/7788991123/AMAZON PAY", merchant: "Amazon", amount: 1299, kind: "expense", category: "shopping", payment: "UPI", status: "settled", confidence: 96, hour: 18 });
   // 3. UPI merchant normalization target
   const { iso: upiIso } = monthOffsetDate(0, 13, 20, 10);
-  all.push({ id: `demo-${seq++}`, date: upiIso, description: "UPI/9283728/RAHULKUMAR@YBL", merchant: "Rahul Kumar", amount: 450, kind: "expense", category: "food", payment: "UPI", status: "settled", confidence: 77, normalized: true });
+  all.push({ id: `demo-${seq++}`, date: upiIso, description: "UPI/9283728/RAHULKUMAR@YBL", merchant: "Rahul Kumar", amount: 450, kind: "expense", category: "food", payment: "UPI", status: "settled", confidence: 77, normalized: true, hour: 20 });
 
   // ── Transport ──
   const transportMerchants = ["Uber", "Ola", "Metro Card", "Indian Oil"];
   for (let i = 0; i < 24; i++) {
     const m = i % 6;
     const merchant = transportMerchants[i % transportMerchants.length];
-    const day = 1 + Math.floor(rng() * 28);
+    const day = discretionaryDay(rng, m);
     const hour = 8 + Math.floor(rng() * 11);
     const { iso } = monthOffsetDate(m, day, hour, Math.floor(rng() * 60));
-    const amount =
+    const raw =
       merchant === "Indian Oil"
         ? Math.round((900 + rng() * 500) / 10) * 10
         : merchant === "Metro Card"
           ? Math.round((60 + rng() * 120) / 5) * 5
           : Math.round((80 + rng() * 260) / 5) * 5;
+    const amount = weekendBoost(rng, iso, raw);
     all.push({
       id: `demo-${seq++}`,
       date: iso,
@@ -277,10 +307,10 @@ export function generateDemoTransactions(): Transaction[] {
   for (let i = 0; i < 9; i++) {
     const m = i % 6;
     const merchant = entMerchants[i % entMerchants.length];
-    const day = 1 + Math.floor(rng() * 28);
+    const day = discretionaryDay(rng, m);
     const hour = 11 + Math.floor(rng() * 10);
     const { iso } = monthOffsetDate(m, day, hour, Math.floor(rng() * 60));
-    const amount = Math.round((180 + rng() * 700) / 10) * 10;
+    const amount = weekendBoost(rng, iso, Math.round((180 + rng() * 700) / 10) * 10);
     all.push({
       id: `demo-${seq++}`,
       date: iso,
@@ -342,8 +372,8 @@ export function generateDemoTransactions(): Transaction[] {
     "Metro",
     "Tea Stall",
   ];
-  all.push(...microTx("UPI", microMerchants, 66, 15, 190, "food", "UPI", rng));
-  all.push(...microTx("WALLET", ["Paytm", "PhonePe", "Mobikwik"], 14, 50, 250, "other", "Wallet", rng));
+  all.push(...microTx("UPI", microMerchants, 100, 15, 190, "food", "UPI", rng));
+  all.push(...microTx("WALLET", ["Paytm", "PhonePe", "Mobikwik"], 26, 50, 250, "other", "Wallet", rng));
 
   // ── Misc ──
   all.push(...tx({ desc: "BOOKMYSHOW/MOVIE", merchant: "BookMyShow", amount: 480, category: "entertainment", payment: "UPI", day: 24, hour: 17, confidence: 92, months: [1, 3, 5] }));
@@ -356,5 +386,5 @@ export function generateDemoTransactions(): Transaction[] {
 
 export const DEMO_SUMMARY = {
   description:
-    "6 months of realistic Indian transactions: UPI, cards, NEFT, ATM, bank fees, subscriptions, SIPs and salary. Planted with a duplicate payment, a subscription price increase, an unused subscription, an unusual ₹8,900 charge, micro-spending and a late-night food-delivery surge.",
+    "6 months of realistic Indian transactions: UPI, cards, NEFT, ATM, bank fees, subscriptions, SIPs and salary. Planted with a duplicate payment, a subscription price increase, an unused subscription, an unusual ₹6,900 charge, micro-spending and a late-night food-delivery surge.",
 };

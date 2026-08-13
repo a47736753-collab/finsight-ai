@@ -49,6 +49,8 @@ export interface Transaction {
   status: TxStatus;
   /** 0-100 categorization confidence */
   confidence: number;
+  /** hour of day 0-23 when known (falls back to a stable hash otherwise) */
+  hour?: number;
   /** true when detected as part of a recurring series */
   recurring?: boolean;
   /** true when the merchant normalized via UPI handle mapping */
@@ -258,6 +260,96 @@ export interface HealthBreakdown {
   score: number;
   weight: number;
   explanation: string;
+}
+
+export interface HealthResult {
+  score: number;
+  level: string;
+  levelLabel: string;
+  breakdown: HealthBreakdown[];
+}
+
+export interface Gamification {
+  streak: number;
+  leaksFound: number;
+  savingsMilestone: number;
+  level: number;
+  levelLabel: string;
+}
+
+export interface RootCauseResult {
+  root: TreeNode;
+  headline: string;
+  changePct: number;
+  excess: number;
+}
+
+export interface NetworkResult {
+  nodes: NetworkNode[];
+  links: NetworkLink[];
+  headline: string;
+}
+
+export interface CopilotAnswer {
+  text: string;
+  citations: string[];
+  nav?: TabId;
+}
+
+export type TabId =
+  | "overview"
+  | "leaks"
+  | "transactions"
+  | "insights"
+  | "root-cause"
+  | "whatif"
+  | "forecast"
+  | "goals"
+  | "subscriptions"
+  | "anomalies"
+  | "network"
+  | "reports"
+  | "settings";
+
+export interface CsvParseResult {
+  txs: Transaction[];
+  skipped: number;
+  errors: string[];
+  detectedColumns: string[];
+}
+
+export interface Analysis {
+  txs: Transaction[];
+  goals: Goal[];
+  currentMonth: string;
+  currentMonthLabel: string;
+  income: number;
+  spending: number;
+  savings: number;
+  savingsRate: number;
+  avgMonthlySpend: number;
+  risk: "low" | "moderate" | "high";
+  riskLabel: string;
+  health: HealthResult;
+  gamification: Gamification;
+  potentialSavings: { monthly: number; annual: number; breakdown: { label: string; monthly: number }[] };
+  insights: Insight[];
+  alerts: Alert[];
+  leaks: Leak[];
+  subscriptions: Subscription[];
+  duplicates: DuplicatePair[];
+  anomalies: Anomaly[];
+  categories: CategorySummary[];
+  merchants: MerchantIntel[];
+  monthlySeries: MonthPoint[];
+  heatmap: { cells: HeatCell[]; total: number; avgPerDay: number; days: number };
+  timeOfDay: TimeOfDay[];
+  weekday: { byDay: { day: string; amount: number; share: number }[]; weekendRatio: number };
+  rootCause: RootCauseResult;
+  network: NetworkResult;
+  forecast: ForecastResult;
+  profile: BehaviorProfile;
+  actionPlan: ActionPlan;
 }
 
 // ─── Category metadata ───────────────────────────────────────────────────────

@@ -97,16 +97,23 @@ export function detectSubscriptions(txs: Transaction[]): Subscription[] {
   for (const [merchant, arr] of byMerchant) {
     const sorted = [...arr].sort((a, b) => (a.date < b.date ? -1 : 1));
     if (sorted.length < 2) continue;
-    // recurring if present in ≥ 3 months or ≥ 2 consecutive months with same amount pattern
+    const category = sorted[0].category as CategoryId;
+    // savings/investments/transfers are allocations, not recurring charges
+    if (category === "savings" || category === "investments" || category === "transfers" || category === "income") continue;
     const monthSet = new Set(sorted.map((t) => monthKey(t.date)));
-    const isRecurring =
-      monthSet.size >= 3 ||
-      (monthSet.size >= 2 && sorted.every((t) => t.category === "subscriptions" || t.amount >= 500));
-    if (!isRecurring) continue;
-    // frequency guess
     const amounts = sorted.map((t) => t.amount);
     const mean = amounts.reduce((s, a) => s + a, 0) / amounts.length;
     const spread = Math.max(...amounts) - Math.min(...amounts);
+    // recurring when: a subscription/bill/utility charged in ≥ 2 months, or a
+    // stable-amount charge (≤15% spread) appearing in ≥ 3 months. Repeat food
+    // orders, groceries and transport trips have wide spreads and are excluded.
+    const isRecurring =
+      (monthSet.size >= 2 && (category === "subscriptions" || category === "bills" || category === "utilities")) ||
+      (monthSet.size >= 3 &&
+        spread <= Math.max(50, mean * 0.15) &&
+        mean >= 200 &&
+        (category === "subscriptions" || category === "bills" || category === "utilities"));
+    if (!isRecurring) continue;
     const monthlyCost = spread <= Math.max(50, mean * 0.15) ? mean : amounts[amounts.length - 1];
     // price history
     const priceHistory = months
@@ -120,7 +127,6 @@ export function detectSubscriptions(txs: Transaction[]): Subscription[] {
       priceHistory.length >= 2
         ? Math.max(0, Math.round(((priceHistory[priceHistory.length - 1].amount - priceHistory[0].amount) / priceHistory[0].amount) * 100))
         : 0;
-    const category = sorted[0].category as CategoryId;
     const unused = category === "subscriptions" && !isSubscriptionUsed(sorted);
     out.push({
       id: `sub-${merchant}`,
@@ -223,14 +229,16 @@ export function detectLeaks(ctx: LeakContext): Leak[] {
   const microTotal = micro.reduce((s, t) => s + t.amount, 0);
   const monthTotal = totalSpend(txs, currentMonth) || totalSpend(txs);
   const share = monthTotal > 0 ? microTotal / monthTotal : 0;
+  const microMonths = Math.max(1, monthRange(txs).length);
+  const microMonthly = monthTotal > 0 ? Math.round((microTotal / microMonths) * 0.35) : 0;
   if (micro.length >= 20) {
     leaks.push({
       id: "leak-micro",
       kind: "micro",
       title: `${micro.length} micro-transactions under ₹200`,
-      detail: `Total ${formatINR(Math.round(microTotal))}. Your small transactions represent ${Math.round(share * 100)}% of monthly spending — individually tiny, cumulatively significant.`,
-      monthly: monthTotal > 0 ? Math.round(microTotal * 0.35) : 0,
-      annual: monthTotal > 0 ? Math.round(microTotal * 0.35 * 12) : 0,
+      detail: `Total ${formatINR(Math.round(microTotal))} over ${microMonths} months. Your small transactions represent ${Math.round(share * 100)}% of monthly spending — individually tiny, cumulatively significant.`,
+      monthly: microMonthly,
+      annual: microMonthly * 12,
       actions: [
         { label: "Investigate", action: "investigate" },
         { label: "Dismiss", action: "dismiss" },
@@ -267,8 +275,9 @@ export function detectLeaks(ctx: LeakContext): Leak[] {
     });
   }
 
-  // 5. Late-night food surge (root-cause feeder)
-  const lateNightFood = expenses(txs).filter((t) => t.category === "food" && hourOf(t) >= 21);
+  // 5. Late-night food-delivery surge (root-cause feeder)
+  const isDelivery = (t: Transaction) => /(swiggy|zomato|dominos|kfc|mcdonald)/i.test(t.merchant);
+  const lateNightFood = expenses(txs).filter((t) => t.category === "food" && isDelivery(t) && hourOf(t) >= 21);
   if (lateNightFood.length >= 8) {
     const recent = lateNightFood.filter((t) => monthKey(t.date) === currentMonth);
     const recentTotal = recent.reduce((s, t) => s + t.amount, 0);
@@ -304,6 +313,12 @@ export function detectLeaks(ctx: LeakContext): Leak[] {
   for (const [cat, now] of catSpendNow) {
     const avg = (catSpendAvg.get(cat) ?? 0) / Math.max(1, avgKeys.length);
     if (avg > 0 && now > avg * 1.22 && now - avg > 800) {
+      // if a single transaction (already flagged as an anomaly) makes up most of
+      // the category's month, the jump is a one-off — not a recurring leak. The
+      // Anomalies tab handles it; don't double-count it as fixable overspend.
+      const monthTxs = expenses(txs).filter((t) => monthKey(t.date) === currentMonth && t.category === cat);
+      const largest = monthTxs.reduce((a, b) => (a.amount > b.amount ? a : b), monthTxs[0]);
+      if (largest && anomalies.some((a) => a.tx.id === largest.id) && largest.amount >= now * 0.5) continue;
       const label = cat;
       void label;
       leaks.push({
@@ -322,7 +337,14 @@ export function detectLeaks(ctx: LeakContext): Leak[] {
     }
   }
 
-  return leaks.sort((a, b) => b.monthly - a.monthly);
+  // Dedupe: if a late-night spike leak already covers a category's surge,
+  // drop the generic overspend leak for the same category to avoid counting
+  // the same money twice.
+  const spikeCats = new Set<string>();
+  for (const l of leaks) if (l.kind === "spike") spikeCats.add(l.title.toLowerCase().includes("food") ? "food" : "");
+  const deduped = spikeCats.size ? leaks.filter((l) => !(l.kind === "overspend" && spikeCats.has(l.title.split(" ")[0]))) : leaks;
+
+  return deduped.sort((a, b) => b.monthly - a.monthly);
 }
 
 /** Combined "money you could save" estimate from the leak list (marked potential). */

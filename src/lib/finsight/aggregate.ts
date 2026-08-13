@@ -231,11 +231,13 @@ export function timeOfDay(txs: Transaction[]): TimeOfDay[] {
 }
 
 /**
- * Demo transactions don't store the time of day, so we derive a stable
+ * Hour of day for a transaction. When the data records the time (statement
+ * imports, demo generator) we use it directly; otherwise we derive a stable
  * pseudo-hour from the description hash — keeps time-of-day analytics honest
  * (same tx always maps to the same bucket) without inventing randomness.
  */
 export function hourOf(t: Transaction): number {
+  if (t.hour !== undefined && t.hour >= 0 && t.hour <= 23) return t.hour;
   let h = 0;
   const str = `${t.id}|${t.merchant}|${t.description}`;
   for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
@@ -243,9 +245,13 @@ export function hourOf(t: Transaction): number {
 }
 
 export function weekdayStats(txs: Transaction[]): { byDay: { day: string; amount: number; share: number }[]; weekendRatio: number } {
+  // Recent window (last 3 months) — weekend-vs-weekday is a current-behavior
+  // signal; a long history with a few outliers would dilute it to noise.
+  const recentKeys = lastNMonths(txs, 3);
   const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const amounts = [0, 0, 0, 0, 0, 0, 0];
   for (const t of expenses(txs)) {
+    if (!recentKeys.includes(monthKey(t.date))) continue;
     const d = new Date(`${t.date}T12:00:00`);
     if (Number.isNaN(d.getTime())) continue;
     amounts[d.getDay()] += t.amount;
@@ -262,6 +268,25 @@ export function weekdayStats(txs: Transaction[]): { byDay: { day: string; amount
 
 export function transactionsBelow(txs: Transaction[], threshold: number) {
   return expenses(txs).filter((t) => t.amount <= threshold);
+}
+
+/** Categories where behavior (not bills) drives the pattern — used for the
+ *  late-night and impulse-spending stories so rent/SIP/fee noise doesn't
+ *  dilute them. */
+export const DISCRETIONARY: CategoryId[] = ["food", "shopping", "entertainment", "transport", "other"];
+
+/** Share of discretionary spending (recent 3 months) happening after 9 PM. */
+export function discretionaryNightShare(txs: Transaction[]) {
+  const recentKeys = lastNMonths(txs, 3);
+  let discTotal = 0;
+  let nightTotal = 0;
+  for (const t of expenses(txs)) {
+    if (!recentKeys.includes(monthKey(t.date))) continue;
+    if (!DISCRETIONARY.includes(t.category)) continue;
+    discTotal += t.amount;
+    if (hourOf(t) >= 21) nightTotal += t.amount;
+  }
+  return { amount: nightTotal, share: discTotal > 0 ? nightTotal / discTotal : 0 };
 }
 
 export function categoryOf(t: Transaction): CategoryId {
