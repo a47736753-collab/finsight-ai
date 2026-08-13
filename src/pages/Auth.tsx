@@ -35,7 +35,7 @@ function resolveRedirectAfterAuth(
 }
 
 function Auth({ redirectAfterAuth }: AuthProps = {}) {
-  const { isLoading: authLoading, isAuthenticated, signIn } = useAuth();
+  const { isLoading: authLoading, isAuthenticated, signIn, isConvexConfigured } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirect = resolveRedirectAfterAuth(
@@ -48,12 +48,17 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!authLoading && isAuthenticated) {
+    if (!authLoading && isAuthenticated && isConvexConfigured) {
       navigate(redirect);
     }
-  }, [authLoading, isAuthenticated, navigate, redirect]);
+  }, [authLoading, isAuthenticated, isConvexConfigured, navigate, redirect]);
+
   const handleEmailSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!isConvexConfigured) {
+      setError("Convex backend is not configured. Set VITE_CONVEX_URL in .env or click 'Continue as Guest'.");
+      return;
+    }
     setIsLoading(true);
     setError(null);
     try {
@@ -97,9 +102,11 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
     setIsLoading(true);
     setError(null);
     try {
-      console.log("Attempting anonymous sign in...");
-      await signIn("anonymous");
-      console.log("Anonymous sign in successful");
+      if (isConvexConfigured) {
+        console.log("Attempting anonymous sign in...");
+        await signIn("anonymous");
+        console.log("Anonymous sign in successful");
+      }
       navigate(redirect);
     } catch (error) {
       console.error("Guest login error:", error);

@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router";
 
 export function RequireAuth({ children }: { children: ReactNode }) {
-  const { isLoading, isAuthenticated } = useAuth();
+  const { isLoading, isAuthenticated, isConvexConfigured } = useAuth();
   const location = useLocation();
 
   if (isLoading) {
@@ -15,7 +15,7 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!isAuthenticated) {
+  if (isConvexConfigured && !isAuthenticated) {
     const returnTo = `${location.pathname}${location.search}`;
     return (
       <Navigate

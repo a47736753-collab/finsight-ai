@@ -80,7 +80,25 @@ class RootErrorBoundary extends React.Component<
   }
 }
 
-const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL as string);
+// Guard: ConvexReactClient throws if URL is undefined/empty.
+// When VITE_CONVEX_URL is not set the landing page should still render.
+const CONVEX_URL = import.meta.env.VITE_CONVEX_URL as string | undefined;
+const convex = CONVEX_URL ? new ConvexReactClient(CONVEX_URL) : null;
+
+/**
+ * Wraps children with Convex providers when a client is available.
+ * Falls back to rendering children directly so the landing page still works.
+ */
+function ConvexProviderWrapper({ children }: { children: React.ReactNode }) {
+  if (!convex) {
+    return <>{children}</>;
+  }
+  return (
+    <ConvexAuthProvider client={convex}>
+      {children}
+    </ConvexAuthProvider>
+  );
+}
 
 
 
@@ -114,7 +132,7 @@ createRoot(document.getElementById("root")!).render(
       <ToolbarErrorBoundary>
         <VlyToolbar />
       </ToolbarErrorBoundary>
-      <ConvexAuthProvider client={convex}>
+      <ConvexProviderWrapper>
         <BrowserRouter>
           <RouteSyncer />
           <Suspense fallback={<RouteLoading />}>
@@ -137,7 +155,7 @@ createRoot(document.getElementById("root")!).render(
           </Suspense>
         </BrowserRouter>
         <Toaster />
-      </ConvexAuthProvider>
+      </ConvexProviderWrapper>
     </RootErrorBoundary>
   </StrictMode>,
 );
